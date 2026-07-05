@@ -79,6 +79,59 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun register(
+        name: String,
+        email: String,
+        phone: String,
+        nicNumber: String?,
+        school: String,
+        role: String,
+        employeeId: String?,
+        password: String,
+        onSuccess: () -> Unit,
+        onError: (String) -> Unit
+    ) {
+        viewModelScope.launch {
+            val result = repository.register(
+                name = name,
+                email = email,
+                phone = phone,
+                nicNumber = nicNumber,
+                school = school,
+                role = role,
+                employeeId = employeeId,
+                password = password
+            )
+            if (result.isSuccess) {
+                onSuccess()
+            } else {
+                onError(result.exceptionOrNull()?.message ?: "Registration failed")
+            }
+        }
+    }
+
+    fun approveUser(userId: String, onSuccess: () -> Unit, onError: (String) -> Unit) {
+        viewModelScope.launch {
+            val success = repository.approveUser(userId)
+            if (success) {
+                onSuccess()
+            } else {
+                onError("Failed to approve user")
+            }
+        }
+    }
+
+    fun rejectUser(userId: String, reason: String?, onSuccess: () -> Unit, onError: (String) -> Unit) {
+        viewModelScope.launch {
+            val success = repository.rejectUser(userId, reason)
+            if (success) {
+                onSuccess()
+            } else {
+                onError("Failed to reject user")
+            }
+        }
+    }
+
     fun logout() {
         viewModelScope.launch {
             repository.logout()

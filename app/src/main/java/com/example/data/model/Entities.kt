@@ -73,11 +73,16 @@ data class UserEntity(
     @PrimaryKey val userId: String,
     val name: String,
     val school: String,
-    val role: String, // "Admin", "Principal", "Teacher"
+    val role: String, // "Admin", "School Principal", "In-Charge Teacher", "Principal", "Teacher"
     val email: String,
     val phone: String,
-    val status: String, // "Active", "Inactive"
-    val lastLogin: String
+    val status: String, // "Pending", "Active", "Rejected", "Disabled"
+    val lastLogin: String,
+    val nicNumber: String? = null,
+    val employeeId: String? = null,
+    val registrationDate: String = "",
+    val profilePhotoUrl: String? = null,
+    val passwordHash: String? = null
 )
 
 @Entity(tableName = "settings")

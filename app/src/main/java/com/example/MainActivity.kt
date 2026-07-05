@@ -62,6 +62,15 @@ class MainActivity : ComponentActivity() {
                         composable(Routes.ABOUT) {
                             AboutScreen(navController = navController)
                         }
+                        composable(Routes.REGISTER) {
+                            RegisterScreen(navController = navController, viewModel = viewModel)
+                        }
+                        composable(Routes.REGISTRATION_SUCCESS) {
+                            RegistrationSuccessScreen(navController = navController)
+                        }
+                        composable(Routes.USER_APPROVAL) {
+                            UserApprovalScreen(navController = navController, viewModel = viewModel)
+                        }
                     }
                 }
             }

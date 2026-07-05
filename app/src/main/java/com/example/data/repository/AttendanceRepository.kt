@@ -5,6 +5,8 @@ import android.content.SharedPreferences
 import android.os.Build
 import com.example.data.local.AppDatabase
 import com.example.data.model.*
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
@@ -12,8 +14,25 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.*
+import kotlin.coroutines.resume
 
 class AttendanceRepository(private val context: Context) {
+
+    private val firebaseAuth: FirebaseAuth? by lazy {
+        try {
+            FirebaseAuth.getInstance()
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private val firestore: FirebaseFirestore? by lazy {
+        try {
+            FirebaseFirestore.getInstance()
+        } catch (e: Exception) {
+            null
+        }
+    }
 
     private val database = AppDatabase.getDatabase(context)
     private val schoolDao = database.schoolDao()
@@ -102,29 +121,109 @@ class AttendanceRepository(private val context: Context) {
 
     // Authentication Functions
     suspend fun login(email: String, password: String): Result<UserEntity> = withContext(Dispatchers.IO) {
-        // Simple security login matching the prompt specifications
-        val user = userDao.getUserByEmail(email.trim().lowercase())
+        val trimmedEmail = email.trim().lowercase()
+        
+        // 1. Try Firebase Authentication if available and online
+        val auth = firebaseAuth
+        val db = firestore
+        if (auth != null && db != null && isOnline.value) {
+            try {
+                // Perform Firebase Sign In
+                val authResult = auth.signInWithEmailAndPassword(trimmedEmail, password).awaitResult()
+                val uid = authResult.user?.uid ?: throw Exception("Authentication user is null")
+                
+                // Fetch extra details from Firestore
+                val doc = db.collection("Users").document(uid).get().awaitResult()
+                if (doc.exists()) {
+                    val status = doc.getString("status") ?: "Pending"
+                    
+                    // Validate status as per login rules
+                    when (status) {
+                        "Pending" -> return@withContext Result.failure(Exception("Your account is waiting for administrator approval."))
+                        "Rejected" -> return@withContext Result.failure(Exception("Your registration has been rejected. Please contact the administrator."))
+                        "Disabled" -> return@withContext Result.failure(Exception("Your account has been disabled."))
+                        "Active" -> { /* allow login */ }
+                        else -> return@withContext Result.failure(Exception("Invalid account status: $status"))
+                    }
+                    
+                    val name = doc.getString("name") ?: "User"
+                    val school = doc.getString("school") ?: ""
+                    val role = doc.getString("role") ?: "Teacher"
+                    val phone = doc.getString("phone") ?: ""
+                    val lastLogin = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
+                    val nic = doc.getString("nicNumber")
+                    val employeeId = doc.getString("employeeId")
+                    val regDate = doc.getString("registrationDate") ?: ""
+                    val photoUrl = doc.getString("profilePhotoUrl")
+                    
+                    // Update lastLogin in Firestore
+                    db.collection("Users").document(uid).update("lastLogin", lastLogin)
+                    
+                    // Update/insert user in local Room database for offline session cache
+                    val user = UserEntity(
+                        userId = uid,
+                        name = name,
+                        school = school,
+                        role = role,
+                        email = trimmedEmail,
+                        phone = phone,
+                        status = status,
+                        lastLogin = lastLogin,
+                        nicNumber = nic,
+                        employeeId = employeeId,
+                        registrationDate = regDate,
+                        profilePhotoUrl = photoUrl
+                    )
+                    userDao.insertUser(user)
+                    
+                    saveUserSession(user)
+                    _currentUser.value = user
+                    
+                    logActivity(
+                        userId = uid,
+                        userName = name,
+                        userRole = role,
+                        action = "LOGIN",
+                        details = "User logged in successfully via Firebase"
+                    )
+                    return@withContext Result.success(user)
+                } else {
+                    throw Exception("User data not found in Firestore")
+                }
+            } catch (e: Exception) {
+                val msg = e.message ?: ""
+                if (msg.contains("password", true) || msg.contains("no user", true) || msg.contains("credential", true) || msg.contains("badly formatted", true)) {
+                    return@withContext Result.failure(e)
+                }
+                // Otherwise fall back to local Room login below
+            }
+        }
+        
+        // 2. Fallback local Room Login
+        val user = userDao.getUserByEmail(trimmedEmail)
         if (user != null) {
-            // Match mock passwords
             val isValidPassword = when {
-                email.contains("admin", true) && password == "admin123" -> true
-                email.contains("principal", true) && password == "principal123" -> true
-                email.contains("teacher", true) && password == "teacher123" -> true
-                password == "imho123" -> true // Universal master password for seed users
+                trimmedEmail.contains("admin", true) && password == "admin123" -> true
+                trimmedEmail.contains("principal", true) && password == "principal123" -> true
+                trimmedEmail.contains("teacher", true) && password == "teacher123" -> true
+                password == "imho123" -> true
+                user.passwordHash == password -> true
                 else -> false
             }
 
             if (isValidPassword) {
-                if (user.status == "Inactive") {
-                    return@withContext Result.failure(Exception("This user account is inactive. Please contact the administrator."))
+                when (user.status) {
+                    "Pending" -> return@withContext Result.failure(Exception("Your account is waiting for administrator approval."))
+                    "Rejected" -> return@withContext Result.failure(Exception("Your registration has been rejected. Please contact the administrator."))
+                    "Disabled" -> return@withContext Result.failure(Exception("Your account has been disabled."))
+                    "Active", "Inactive" -> { /* allow login */ }
+                    else -> return@withContext Result.failure(Exception("This user account is inactive. Please contact the administrator."))
                 }
 
-                // Update last login
                 val nowStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
                 val updatedUser = user.copy(lastLogin = nowStr)
                 userDao.insertUser(updatedUser)
 
-                // Save session
                 saveUserSession(updatedUser)
                 _currentUser.value = updatedUser
 
@@ -133,7 +232,7 @@ class AttendanceRepository(private val context: Context) {
                     userName = updatedUser.name,
                     userRole = updatedUser.role,
                     action = "LOGIN",
-                    details = "User logged in successfully"
+                    details = "User logged in successfully (Local Cache)"
                 )
 
                 return@withContext Result.success(updatedUser)
@@ -141,8 +240,184 @@ class AttendanceRepository(private val context: Context) {
                 return@withContext Result.failure(Exception("Incorrect password. Try admin123, principal123, or teacher123."))
             }
         } else {
-            return@withContext Result.failure(Exception("Email not found. Use admin@imho.org, principal@imho.org, or teacher@imho.org."))
+            return@withContext Result.failure(Exception("Email not found. Please register or verify your credentials."))
         }
+    }
+
+    suspend fun register(
+        name: String,
+        email: String,
+        phone: String,
+        nicNumber: String?,
+        school: String,
+        role: String,
+        employeeId: String?,
+        password: String
+    ): Result<UserEntity> = withContext(Dispatchers.IO) {
+        val trimmedEmail = email.trim().lowercase()
+        val nowStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
+        
+        // 1. Try Firebase Authentication if available and online
+        val auth = firebaseAuth
+        val db = firestore
+        if (auth != null && db != null && isOnline.value) {
+            try {
+                val authResult = auth.createUserWithEmailAndPassword(trimmedEmail, password).awaitResult()
+                val uid = authResult.user?.uid ?: throw Exception("Failed to retrieve user ID")
+                
+                val userMap = hashMapOf(
+                    "userId" to uid,
+                    "name" to name,
+                    "email" to trimmedEmail,
+                    "phone" to phone,
+                    "nicNumber" to nicNumber,
+                    "school" to school,
+                    "role" to role,
+                    "employeeId" to employeeId,
+                    "status" to "Pending",
+                    "registrationDate" to nowStr,
+                    "lastLogin" to "Never",
+                    "profilePhotoUrl" to "https://api.dicebear.com/7.x/avataaars/svg?seed=${name.replace(" ", "")}"
+                )
+                
+                db.collection("Users").document(uid).set(userMap).awaitResult()
+                
+                val user = UserEntity(
+                    userId = uid,
+                    name = name,
+                    school = school,
+                    role = role,
+                    email = trimmedEmail,
+                    phone = phone,
+                    status = "Pending",
+                    lastLogin = "Never",
+                    nicNumber = nicNumber,
+                    employeeId = employeeId,
+                    registrationDate = nowStr,
+                    profilePhotoUrl = "https://api.dicebear.com/7.x/avataaars/svg?seed=${name.replace(" ", "")}",
+                    passwordHash = password
+                )
+                userDao.insertUser(user)
+                
+                logActivity(
+                    userId = uid,
+                    userName = name,
+                    userRole = role,
+                    action = "REGISTRATION",
+                    details = "User registered successfully with status Pending (Firebase)"
+                )
+                
+                return@withContext Result.success(user)
+            } catch (e: Exception) {
+                val msg = e.message ?: ""
+                if (msg.contains("email", true) || msg.contains("already", true) || msg.contains("invalid", true)) {
+                    return@withContext Result.failure(e)
+                }
+            }
+        }
+        
+        // 2. Fallback Local Registration
+        val existing = userDao.getUserByEmail(trimmedEmail)
+        if (existing != null) {
+            return@withContext Result.failure(Exception("An account with this email address already exists."))
+        }
+        
+        val localUid = "USR_" + UUID.randomUUID().toString().take(8)
+        val user = UserEntity(
+            userId = localUid,
+            name = name,
+            school = school,
+            role = role,
+            email = trimmedEmail,
+            phone = phone,
+            status = "Pending",
+            lastLogin = "Never",
+            nicNumber = nicNumber,
+            employeeId = employeeId,
+            registrationDate = nowStr,
+            profilePhotoUrl = "https://api.dicebear.com/7.x/avataaars/svg?seed=${name.replace(" ", "")}",
+            passwordHash = password
+        )
+        
+        userDao.insertUser(user)
+        
+        logActivity(
+            userId = localUid,
+            userName = name,
+            userRole = role,
+            action = "REGISTRATION",
+            details = "User registered successfully with status Pending (Local Database)"
+        )
+        
+        return@withContext Result.success(user)
+    }
+
+    suspend fun approveUser(userId: String): Boolean = withContext(Dispatchers.IO) {
+        val user = userDao.getUserById(userId) ?: return@withContext false
+        val updatedUser = user.copy(status = "Active")
+        userDao.insertUser(updatedUser)
+        
+        val teacherRole = when (user.role) {
+            "School Principal" -> "Principal"
+            "In-Charge Teacher" -> "In-Charge Teacher"
+            else -> user.role
+        }
+        
+        val teacher = TeacherEntity(
+            teacherId = user.userId,
+            name = user.name,
+            email = user.email,
+            phone = user.phone,
+            school = user.school,
+            role = teacherRole,
+            photo = user.profilePhotoUrl ?: "",
+            status = "Active"
+        )
+        teacherDao.insertTeacher(teacher)
+        
+        val db = firestore
+        if (db != null && isOnline.value) {
+            try {
+                db.collection("Users").document(userId).update("status", "Active").awaitResult()
+            } catch (e: Exception) {
+                // local update succeeded
+            }
+        }
+        
+        val admin = _currentUser.value
+        logActivity(
+            userId = admin?.userId ?: "ADMIN",
+            userName = admin?.name ?: "Admin",
+            userRole = admin?.role ?: "Admin",
+            action = "APPROVE_USER",
+            details = "Approved account for ${user.name} (${user.email}) - assigned to ${user.school}"
+        )
+        return@withContext true
+    }
+
+    suspend fun rejectUser(userId: String, reason: String?): Boolean = withContext(Dispatchers.IO) {
+        val user = userDao.getUserById(userId) ?: return@withContext false
+        val updatedUser = user.copy(status = "Rejected")
+        userDao.insertUser(updatedUser)
+        
+        val db = firestore
+        if (db != null && isOnline.value) {
+            try {
+                db.collection("Users").document(userId).update("status", "Rejected").awaitResult()
+            } catch (e: Exception) {
+                // local update succeeded
+            }
+        }
+        
+        val admin = _currentUser.value
+        logActivity(
+            userId = admin?.userId ?: "ADMIN",
+            userName = admin?.name ?: "Admin",
+            userRole = admin?.role ?: "Admin",
+            action = "REJECT_USER",
+            details = "Rejected account for ${user.name} (${user.email}). Reason: ${reason ?: "No reason provided"}"
+        )
+        return@withContext true
     }
 
     suspend fun resetPassword(email: String): Result<String> = withContext(Dispatchers.IO) {
@@ -579,4 +854,15 @@ sealed class ScanResult {
     data class Success(val student: StudentEntity, val record: AttendanceEntity) : ScanResult()
     data class AlreadyScanned(val student: StudentEntity, val recordedTime: String, val recordedDate: String) : ScanResult()
     data class Error(val message: String) : ScanResult()
+}
+
+// Extension to wait for Google Task in coroutines
+suspend fun <T> com.google.android.gms.tasks.Task<T>.awaitResult(): T = kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+    addOnCompleteListener { task ->
+        if (task.isSuccessful) {
+            cont.resume(task.result)
+        } else {
+            cont.resumeWith(Result.failure(task.exception ?: Exception("Unknown task execution error")))
+        }
+    }
 }

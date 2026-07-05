@@ -78,6 +78,9 @@ object Routes {
     const val SETTINGS = "settings"
     const val PROFILE = "profile"
     const val ABOUT = "about"
+    const val REGISTER = "register"
+    const val REGISTRATION_SUCCESS = "registration_success"
+    const val USER_APPROVAL = "user_approval"
 }
 
 // Play success beep
@@ -320,7 +323,23 @@ fun LoginScreen(navController: NavController, viewModel: MainViewModel) {
                 Text("Login Securely", fontSize = 16.sp, fontWeight = FontWeight.Bold)
             }
 
-            Spacer(modifier = Modifier.height(32.dp))
+            Spacer(modifier = Modifier.height(12.dp))
+
+            OutlinedButton(
+                onClick = { navController.navigate(Routes.REGISTER) },
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(52.dp)
+                    .testTag("signup_button"),
+                border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
+            ) {
+                Icon(Icons.Default.Person, contentDescription = "Create Account")
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Create Account (Sign Up)", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
 
             // Quick Tester Panel (A extremely user-friendly feature for reviewers!)
             Card(
@@ -529,6 +548,7 @@ fun DashboardScreen(navController: NavController, viewModel: MainViewModel) {
     val teachers by viewModel.teachers.collectAsState()
     val students by viewModel.students.collectAsState()
     val attendance by viewModel.attendance.collectAsState()
+    val users by viewModel.users.collectAsState()
     val isOnline by viewModel.isOnline.collectAsState()
     val isSyncing by viewModel.isSyncing.collectAsState()
     val activityLogs by viewModel.activityLogs.collectAsState()
@@ -1054,6 +1074,73 @@ fun DashboardScreen(navController: NavController, viewModel: MainViewModel) {
                                         letterSpacing = 0.5.sp
                                     )
                                 }
+                            }
+                        }
+                    }
+                }
+
+                // User Approvals full-width Card for Admin
+                item {
+                    val pendingCount = remember(users) { users.filter { it.status == "Pending" }.size }
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Card(
+                        onClick = { navController.navigate(Routes.USER_APPROVAL) },
+                        shape = RoundedCornerShape(24.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (pendingCount > 0) Color(0xFFFEF3C7) else Color(0xFFFFFBEB)
+                        ),
+                        border = BorderStroke(1.dp, if (pendingCount > 0) Color(0xFFFBBF24) else Color(0xFFFEF3C7)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("admin_user_approvals_card")
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(20.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(16.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(Color.White),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text("🔑", fontSize = 22.sp)
+                                }
+                                Column {
+                                    Text(
+                                        text = "User Approvals",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 16.sp,
+                                        color = Color(0xFF78350F)
+                                    )
+                                    Text(
+                                        text = "Manage pending Teacher & Principal accounts",
+                                        fontSize = 11.sp,
+                                        color = Color(0xFF92400E)
+                                    )
+                                }
+                            }
+                            
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(50.dp))
+                                    .background(if (pendingCount > 0) Color(0xFFD97706) else Color(0xFF9CA3AF))
+                                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                            ) {
+                                Text(
+                                    text = "$pendingCount PENDING",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 10.sp,
+                                    color = Color.White
+                                )
                             }
                         }
                     }
@@ -3317,3 +3404,663 @@ fun BottomNavigationMenu(navController: NavController, activeRoute: String) {
         }
     }
 }
+
+// -----------------------------------------------------------------
+// REGISTRATION SCREEN
+// -----------------------------------------------------------------
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun RegisterScreen(navController: NavController, viewModel: MainViewModel) {
+    val schools by viewModel.schools.collectAsState()
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+
+    var fullName by remember { mutableStateOf("") }
+    var email by remember { mutableStateOf("") }
+    var mobile by remember { mutableStateOf("") }
+    var nicNumber by remember { mutableStateOf("") }
+    var selectedSchool by remember { mutableStateOf("") }
+    var selectedRole by remember { mutableStateOf("") }
+    var employeeId by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var confirmPassword by remember { mutableStateOf("") }
+    var agreeToTerms by remember { mutableStateOf(false) }
+
+    var passwordVisible by remember { mutableStateOf(false) }
+    var confirmPasswordVisible by remember { mutableStateOf(false) }
+
+    var schoolDropdownExpanded by remember { mutableStateOf(false) }
+    var roleDropdownExpanded by remember { mutableStateOf(false) }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Create Account", fontWeight = FontWeight.Bold, color = Color.White) },
+                navigationIcon = {
+                    IconButton(onClick = { navController.navigateUp() }) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back",
+                            tint = Color.White
+                        )
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFF1E3A8A))
+            )
+        },
+        containerColor = Color(0xFFF8FAFC)
+    ) { paddingValues ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+                .verticalScroll(rememberScrollState())
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                ImhoLogoHeader(size = 70.dp)
+                
+                Text(
+                    text = "IMHO Student QR Attendance",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF1E3A8A)
+                )
+
+                Text(
+                    text = "Register as a Teacher or School Principal to manage student attendances safely.",
+                    fontSize = 12.sp,
+                    textAlign = TextAlign.Center,
+                    color = Color(0xFF64748B),
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+
+                // Registration Card Card
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(24.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color.White),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(20.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        // Full Name
+                        OutlinedTextField(
+                            value = fullName,
+                            onValueChange = { fullName = it },
+                            label = { Text("Full Name") },
+                            leadingIcon = { Icon(Icons.Default.Person, contentDescription = null, tint = Color(0xFF64748B)) },
+                            singleLine = true,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("register_name_input"),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+
+                        // Email
+                        OutlinedTextField(
+                            value = email,
+                            onValueChange = { email = it },
+                            label = { Text("Email Address") },
+                            leadingIcon = { Icon(Icons.Default.Email, contentDescription = null, tint = Color(0xFF64748B)) },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                            singleLine = true,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("register_email_input"),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+
+                        // Mobile Number
+                        OutlinedTextField(
+                            value = mobile,
+                            onValueChange = { mobile = it },
+                            label = { Text("Mobile Number") },
+                            leadingIcon = { Icon(Icons.Default.Phone, contentDescription = null, tint = Color(0xFF64748B)) },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                            singleLine = true,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("register_mobile_input"),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+
+                        // NIC Number
+                        OutlinedTextField(
+                            value = nicNumber,
+                            onValueChange = { nicNumber = it },
+                            label = { Text("NIC Number (Optional)") },
+                            leadingIcon = { Icon(Icons.Default.Badge, contentDescription = null, tint = Color(0xFF64748B)) },
+                            singleLine = true,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("register_nic_input"),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+
+                        // School Dropdown
+                        Box(modifier = Modifier.fillMaxWidth()) {
+                            OutlinedTextField(
+                                value = selectedSchool,
+                                onValueChange = {},
+                                readOnly = true,
+                                label = { Text("School") },
+                                leadingIcon = { Icon(Icons.Default.School, contentDescription = null, tint = Color(0xFF64748B)) },
+                                trailingIcon = {
+                                    IconButton(
+                                        onClick = { schoolDropdownExpanded = true },
+                                        modifier = Modifier.testTag("school_dropdown_button")
+                                    ) {
+                                        Icon(Icons.Default.ArrowDropDown, contentDescription = "Select School")
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                            DropdownMenu(
+                                expanded = schoolDropdownExpanded,
+                                onDismissRequest = { schoolDropdownExpanded = false }
+                            ) {
+                                if (schools.isEmpty()) {
+                                    DropdownMenuItem(
+                                        text = { Text("No schools loaded") },
+                                        onClick = { schoolDropdownExpanded = false }
+                                    )
+                                } else {
+                                    schools.forEach { sch ->
+                                        DropdownMenuItem(
+                                            text = { Text(sch.schoolName) },
+                                            onClick = {
+                                                selectedSchool = sch.schoolName
+                                                schoolDropdownExpanded = false
+                                            },
+                                            modifier = Modifier.testTag("school_option_${sch.schoolId}")
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        // Role Dropdown
+                        Box(modifier = Modifier.fillMaxWidth()) {
+                            OutlinedTextField(
+                                value = selectedRole,
+                                onValueChange = {},
+                                readOnly = true,
+                                label = { Text("Role") },
+                                leadingIcon = { Icon(Icons.Default.Work, contentDescription = null, tint = Color(0xFF64748B)) },
+                                trailingIcon = {
+                                    IconButton(
+                                        onClick = { roleDropdownExpanded = true },
+                                        modifier = Modifier.testTag("role_dropdown_button")
+                                    ) {
+                                        Icon(Icons.Default.ArrowDropDown, contentDescription = "Select Role")
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                            DropdownMenu(
+                                expanded = roleDropdownExpanded,
+                                onDismissRequest = { roleDropdownExpanded = false }
+                            ) {
+                                listOf("School Principal", "In-Charge Teacher").forEach { role ->
+                                    DropdownMenuItem(
+                                        text = { Text(role) },
+                                        onClick = {
+                                            selectedRole = role
+                                            roleDropdownExpanded = false
+                                        },
+                                        modifier = Modifier.testTag("role_option_${role.replace(" ", "_")}")
+                                    )
+                                }
+                            }
+                        }
+
+                        // Employee/Teacher ID
+                        OutlinedTextField(
+                            value = employeeId,
+                            onValueChange = { employeeId = it },
+                            label = { Text("Employee/Teacher ID (Optional)") },
+                            leadingIcon = { Icon(Icons.Default.AssignmentInd, contentDescription = null, tint = Color(0xFF64748B)) },
+                            singleLine = true,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("register_employee_id_input"),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+
+                        // Password
+                        OutlinedTextField(
+                            value = password,
+                            onValueChange = { password = it },
+                            label = { Text("Password") },
+                            leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null, tint = Color(0xFF64748B)) },
+                            trailingIcon = {
+                                IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                                    Icon(
+                                        imageVector = if (passwordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                        contentDescription = "Toggle password visibility"
+                                    )
+                                }
+                            },
+                            visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                            singleLine = true,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("register_password_input"),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+
+                        // Confirm Password
+                        OutlinedTextField(
+                            value = confirmPassword,
+                            onValueChange = { confirmPassword = it },
+                            label = { Text("Confirm Password") },
+                            leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null, tint = Color(0xFF64748B)) },
+                            trailingIcon = {
+                                IconButton(onClick = { confirmPasswordVisible = !confirmPasswordVisible }) {
+                                    Icon(
+                                        imageVector = if (confirmPasswordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                        contentDescription = "Toggle password visibility"
+                                    )
+                                }
+                            },
+                            visualTransformation = if (confirmPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                            singleLine = true,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("register_confirm_password_input"),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+
+                        // Terms and Conditions checkbox
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Checkbox(
+                                checked = agreeToTerms,
+                                onCheckedChange = { agreeToTerms = it },
+                                modifier = Modifier.testTag("terms_checkbox")
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "I agree to the Terms and Conditions.",
+                                fontSize = 13.sp,
+                                color = Color(0xFF1E293B)
+                            )
+                        }
+
+                        // Create Account button
+                        Button(
+                            onClick = {
+                                val trimmedEmail = email.trim()
+                                if (fullName.isBlank() || trimmedEmail.isBlank() || mobile.isBlank() || selectedSchool.isBlank() || selectedRole.isBlank() || password.isBlank() || confirmPassword.isBlank()) {
+                                    Toast.makeText(context, "Please complete all required fields.", Toast.LENGTH_LONG).show()
+                                    return@Button
+                                }
+                                if (!android.util.Patterns.EMAIL_ADDRESS.matcher(trimmedEmail).matches()) {
+                                    Toast.makeText(context, "Please enter a valid email address.", Toast.LENGTH_LONG).show()
+                                    return@Button
+                                }
+                                if (password.length < 8) {
+                                    Toast.makeText(context, "Password must be at least 8 characters.", Toast.LENGTH_LONG).show()
+                                    return@Button
+                                }
+                                if (password != confirmPassword) {
+                                    Toast.makeText(context, "Passwords and Confirm Password must match.", Toast.LENGTH_LONG).show()
+                                    return@Button
+                                }
+                                if (!agreeToTerms) {
+                                    Toast.makeText(context, "You must agree to the Terms and Conditions.", Toast.LENGTH_LONG).show()
+                                    return@Button
+                                }
+
+                                viewModel.register(
+                                    name = fullName.trim(),
+                                    email = trimmedEmail,
+                                    phone = mobile.trim(),
+                                    nicNumber = if (nicNumber.isBlank()) null else nicNumber.trim(),
+                                    school = selectedSchool,
+                                    role = selectedRole,
+                                    employeeId = if (employeeId.isBlank()) null else employeeId.trim(),
+                                    password = password,
+                                    onSuccess = {
+                                        navController.navigate(Routes.REGISTRATION_SUCCESS) {
+                                            popUpTo(Routes.LOGIN) { inclusive = false }
+                                        }
+                                    },
+                                    onError = { errorMsg ->
+                                        Toast.makeText(context, errorMsg, Toast.LENGTH_LONG).show()
+                                    }
+                                )
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E3A8A)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(52.dp)
+                                .testTag("register_submit_button")
+                        ) {
+                            Text("Create Account", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+                
+                Row(
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Already have an account? ", fontSize = 13.sp, color = Color(0xFF64748B))
+                    TextButton(onClick = { navController.navigateUp() }) {
+                        Text("Log In", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1E3A8A))
+                    }
+                }
+            }
+        }
+    }
+}
+
+// -----------------------------------------------------------------
+// REGISTRATION SUCCESS SCREEN
+// -----------------------------------------------------------------
+@Composable
+fun RegistrationSuccessScreen(navController: NavController) {
+    Scaffold(
+        containerColor = Color(0xFFF8FAFC)
+    ) { paddingValues ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(32.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(24.dp)
+            ) {
+                // Large attractive checkmark badge
+                Box(
+                    modifier = Modifier
+                        .size(100.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFFDCFCE7)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CheckCircle,
+                        contentDescription = "Success",
+                        tint = Color(0xFF15803D),
+                        modifier = Modifier.size(64.dp)
+                    )
+                }
+
+                Text(
+                    text = "Registration Submitted",
+                    fontSize = 24.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF1E3A8A),
+                    textAlign = TextAlign.Center
+                )
+
+                Text(
+                    text = "Thank you for registering. Your account has been submitted for approval. You will be able to log in after an administrator approves your account.",
+                    fontSize = 14.sp,
+                    textAlign = TextAlign.Center,
+                    color = Color(0xFF475569),
+                    lineHeight = 22.sp
+                )
+
+                Button(
+                    onClick = {
+                        navController.navigate(Routes.LOGIN) {
+                            popUpTo(Routes.LOGIN) { inclusive = true }
+                        }
+                    },
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E3A8A)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(52.dp)
+                        .testTag("back_to_login_button")
+                ) {
+                    Text("Return to Login", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                }
+            }
+        }
+    }
+}
+
+// -----------------------------------------------------------------
+// USER APPROVAL (ADMIN ONLY) SCREEN
+// -----------------------------------------------------------------
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun UserApprovalScreen(navController: NavController, viewModel: MainViewModel) {
+    val users by viewModel.users.collectAsState()
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+
+    val pendingUsers = remember(users) { users.filter { it.status == "Pending" } }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("User Approvals", fontWeight = FontWeight.Bold, color = Color.White) },
+                navigationIcon = {
+                    IconButton(onClick = { navController.navigateUp() }) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back",
+                            tint = Color.White
+                        )
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFF1E3A8A))
+            )
+        },
+        containerColor = Color(0xFFF8FAFC)
+    ) { paddingValues ->
+        if (pendingUsers.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(paddingValues),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text("🎉", fontSize = 48.sp)
+                    Text(
+                        text = "No Pending Registrations",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 18.sp,
+                        color = Color(0xFF1E293B)
+                    )
+                    Text(
+                        text = "All registration requests have been processed.",
+                        fontSize = 13.sp,
+                        color = Color(0xFF64748B)
+                    )
+                }
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(paddingValues)
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                items(pendingUsers, key = { it.userId }) { user ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color.White),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                        border = BorderStroke(1.dp, Color(0xFFE2E8F0))
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            // Header Row (Avatar and Name/Role)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0xFFEFF6FF)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = if (user.role == "School Principal") "🎓" else "🧑‍🏫",
+                                        fontSize = 24.sp
+                                    )
+                                }
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = user.name,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 16.sp,
+                                        color = Color(0xFF1E293B)
+                                    )
+                                    Text(
+                                        text = user.role,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = Color(0xFF2563EB)
+                                    )
+                                }
+                            }
+
+                            HorizontalDivider(color = Color(0xFFF1F5F9))
+
+                            // Registration Info
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.Email, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color(0xFF64748B))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(text = "Email: ${user.email}", fontSize = 13.sp, color = Color(0xFF334155))
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.Phone, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color(0xFF64748B))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(text = "Mobile: ${user.phone}", fontSize = 13.sp, color = Color(0xFF334155))
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.School, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color(0xFF64748B))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(text = "School: ${user.school}", fontSize = 13.sp, color = Color(0xFF334155))
+                                }
+                                if (!user.nicNumber.isNullOrBlank()) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Default.Badge, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color(0xFF64748B))
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(text = "NIC: ${user.nicNumber}", fontSize = 13.sp, color = Color(0xFF334155))
+                                    }
+                                }
+                                if (!user.employeeId.isNullOrBlank()) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Default.AssignmentInd, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color(0xFF64748B))
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(text = "ID: ${user.employeeId}", fontSize = 13.sp, color = Color(0xFF334155))
+                                    }
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.CalendarToday, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color(0xFF64748B))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(text = "Registered: ${user.registrationDate}", fontSize = 13.sp, color = Color(0xFF64748B))
+                                }
+                            }
+
+                            HorizontalDivider(color = Color(0xFFF1F5F9))
+
+                            // Action buttons
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                // Reject
+                                OutlinedButton(
+                                    onClick = {
+                                        viewModel.rejectUser(
+                                            userId = user.userId,
+                                            reason = "Declined by administrator request",
+                                            onSuccess = {
+                                                Toast.makeText(context, "Rejected registration for ${user.name}", Toast.LENGTH_SHORT).show()
+                                            },
+                                            onError = { err ->
+                                                Toast.makeText(context, err, Toast.LENGTH_LONG).show()
+                                            }
+                                        )
+                                    },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("reject_button_${user.userId}"),
+                                    shape = RoundedCornerShape(10.dp),
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFDC2626)),
+                                    border = BorderStroke(1.dp, Color(0xFFFCA5A5))
+                                ) {
+                                    Icon(Icons.Default.Close, contentDescription = null)
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Reject", fontWeight = FontWeight.Bold)
+                                }
+
+                                // Approve
+                                Button(
+                                    onClick = {
+                                        viewModel.approveUser(
+                                            userId = user.userId,
+                                            onSuccess = {
+                                                Toast.makeText(context, "Approved registration for ${user.name}", Toast.LENGTH_SHORT).show()
+                                            },
+                                            onError = { err ->
+                                                Toast.makeText(context, err, Toast.LENGTH_LONG).show()
+                                            }
+                                        )
+                                    },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("approve_button_${user.userId}"),
+                                    shape = RoundedCornerShape(10.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A))
+                                ) {
+                                    Icon(Icons.Default.Check, contentDescription = null, tint = Color.White)
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Approve", fontWeight = FontWeight.Bold, color = Color.White)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
